@@ -35,8 +35,7 @@ services:
   backend:
     build:
       context: .
-      dockerfile: Dockerfile.prod
-      target: production
+      dockerfile: Dockerfile
     container_name: 77ai-backend
     restart: unless-stopped
     environment:
@@ -63,8 +62,7 @@ services:
   frontend:
     build:
       context: .
-      dockerfile: Dockerfile.prod
-      target: production
+      dockerfile: Dockerfile
     container_name: 77ai-frontend
     restart: unless-stopped
     environment:
