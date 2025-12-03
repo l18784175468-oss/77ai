@@ -1,7 +1,7 @@
 #!/bin/bash
 
-# 77ai项目直接部署脚本
-# 完全避免Dockerfile构建问题
+# 77ai项目工作部署脚本
+# 解决vite找不到的问题
 
 set -e
 
@@ -88,12 +88,12 @@ create_env_file() {
     fi
 }
 
-# 创建直接部署Docker配置
-create_direct_config() {
-    log_info "创建直接部署Docker配置..."
+# 创建工作部署Docker配置
+create_working_config() {
+    log_info "创建工作部署Docker配置..."
     
-    # 创建直接部署docker-compose配置
-    cat > docker-compose.direct.yml << 'EOF'
+    # 创建工作部署docker-compose配置
+    cat > docker-compose.working.yml << 'EOF'
 version: '3.8'
 
 services:
@@ -171,7 +171,7 @@ services:
     command: >
       sh -c "
         npm install &&
-        npm install vite --save-dev &&
+        npm install -g vite &&
         npm run build &&
         npx http-server dist -p 3000 -a 0.0.0.0
       "
@@ -199,18 +199,18 @@ networks:
     driver: bridge
 EOF
 
-    log_success "直接部署配置创建完成"
+    log_success "工作部署配置创建完成"
 }
 
 # 构建和启动服务
 deploy_services() {
-    log_info "启动服务（使用直接部署配置）..."
+    log_info "启动服务（使用工作部署配置）..."
     
-    # 创建直接部署配置
-    create_direct_config
+    # 创建工作部署配置
+    create_working_config
     
     # 启动服务
-    docker-compose -f docker-compose.direct.yml up -d
+    docker-compose -f docker-compose.working.yml up -d
     
     log_success "服务启动完成"
 }
@@ -226,7 +226,7 @@ wait_for_services() {
     # 等待后端服务
     log_info "等待后端服务启动..."
     for i in {1..60}; do
-        if docker-compose -f docker-compose.direct.yml exec -T backend curl -f http://localhost:5000/api/health &> /dev/null; then
+        if docker-compose -f docker-compose.working.yml exec -T backend curl -f http://localhost:5000/api/health &> /dev/null; then
             log_success "后端服务启动成功"
             break
         fi
@@ -260,17 +260,17 @@ show_deployment_info() {
     echo "  后端API:  http://localhost:5000"
     echo ""
     echo "🔧 管理命令："
-    echo "  查看日志: docker-compose -f docker-compose.direct.yml logs -f"
-    echo "  查看后端日志: docker-compose -f docker-compose.direct.yml logs -f backend"
-    echo "  查看前端日志: docker-compose -f docker-compose.direct.yml logs -f frontend"
-    echo "  停止服务: docker-compose -f docker-compose.direct.yml down"
-    echo "  重启服务: docker-compose -f docker-compose.direct.yml restart"
-    echo "  查看状态: docker-compose -f docker-compose.direct.yml ps"
+    echo "  查看日志: docker-compose -f docker-compose.working.yml logs -f"
+    echo "  查看后端日志: docker-compose -f docker-compose.working.yml logs -f backend"
+    echo "  查看前端日志: docker-compose -f docker-compose.working.yml logs -f frontend"
+    echo "  停止服务: docker-compose -f docker-compose.working.yml down"
+    echo "  重启服务: docker-compose -f docker-compose.working.yml restart"
+    echo "  查看状态: docker-compose -f docker-compose.working.yml ps"
     echo ""
     echo "🔍 故障排除："
     echo "  如果服务无法启动，请检查："
     echo "  1. 端口是否被占用: netstat -tulpn | grep -E ':(3000|5000|6379|27017)'"
-    echo "  2. Docker日志: docker-compose -f docker-compose.direct.yml logs"
+    echo "  2. Docker日志: docker-compose -f docker-compose.working.yml logs"
     echo "  3. 系统资源: free -h, df -h"
     echo ""
     echo "📊 数据库连接："
@@ -282,14 +282,14 @@ show_deployment_info() {
     echo "  2. 建议修改默认数据库密码"
     echo "  3. 生产环境请配置HTTPS证书"
     echo "  4. 当前使用Node.js 20解决兼容性问题"
-    echo "  5. 使用http-server提供前端静态文件服务"
+    echo "  5. 全局安装vite解决构建问题"
     echo ""
 }
 
 # 主函数
 main() {
     echo "=========================================="
-    echo "🚀 77ai项目直接部署脚本"
+    echo "🚀 77ai项目工作部署脚本"
     echo "=========================================="
     echo ""
     
