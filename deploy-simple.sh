@@ -1,7 +1,7 @@
 #!/bin/bash
 
 # 77ai项目简化部署脚本
-# 解决Docker构建问题
+# 解决Node.js版本和构建问题
 
 set -e
 
@@ -58,12 +58,20 @@ check_requirements() {
 cleanup_old() {
     log_info "清理旧的Docker容器和镜像..."
     
-    # 停止并删除容器
-    docker-compose down --remove-orphans 2>/dev/null || true
+    # 停止所有相关容器
+    docker stop 77ai-mongodb 2>/dev/null || true
+    docker stop 77ai-redis 2>/dev/null || true
+    docker stop 77ai-backend 2>/dev/null || true
+    docker stop 77ai-frontend 2>/dev/null || true
     
-    # 删除旧镜像
-    docker rmi 77ai-backend 2>/dev/null || true
-    docker rmi 77ai-frontend 2>/dev/null || true
+    # 删除容器
+    docker rm 77ai-mongodb 2>/dev/null || true
+    docker rm 77ai-redis 2>/dev/null || true
+    docker rm 77ai-backend 2>/dev/null || true
+    docker rm 77ai-frontend 2>/dev/null || true
+    
+    # 删除旧网络
+    docker network rm 77ai_77ai-network 2>/dev/null || true
     
     log_success "清理完成"
 }
@@ -80,24 +88,128 @@ create_env_file() {
     fi
 }
 
+# 创建简化Docker配置
+create_simple_config() {
+    log_info "创建简化Docker配置..."
+    
+    # 创建简化docker-compose配置
+    cat > docker-compose.simple.yml << 'EOF'
+version: '3.8'
+
+services:
+  # MongoDB数据库
+  mongodb:
+    image: mongo:6.0
+    container_name: 77ai-mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: admin
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-password123}
+      MONGO_INITDB_DATABASE: 77ai
+    volumes:
+      - mongodb_data:/data/db
+      - ./scripts/init-mongo.js:/docker-entrypoint-initdb.d/init-mongo.js:ro
+    ports:
+      - "27017:27017"
+    networks:
+      - 77ai-network
+
+  # Redis缓存
+  redis:
+    image: redis:7-alpine
+    container_name: 77ai-redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes --requirepass ${REDIS_PASSWORD:-redis123}
+    volumes:
+      - redis_data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - 77ai-network
+
+  # 后端API服务
+  backend:
+    image: node:20-alpine
+    container_name: 77ai-backend
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "
+        apk add --no-cache python3 make g++ &&
+        npm install &&
+        npm run build &&
+        npm start
+      "
+    environment:
+      NODE_ENV: production
+      PORT: 5000
+      MONGODB_URI: mongodb://admin:${MONGO_ROOT_PASSWORD:-password123}@mongodb:27017/77ai?authSource=admin
+      REDIS_URL: redis://:${REDIS_PASSWORD:-redis123}@redis:6379
+      JWT_SECRET: ${JWT_SECRET:-your-super-secret-jwt-key}
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY}
+      GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY}
+      STABILITY_API_KEY: ${STABILITY_API_KEY}
+    volumes:
+      - ./server:/app
+      - /app/node_modules
+      - ./server/uploads:/app/server/uploads
+    ports:
+      - "5000:5000"
+    depends_on:
+      - mongodb
+      - redis
+    networks:
+      - 77ai-network
+
+  # 前端应用
+  frontend:
+    image: node:20-alpine
+    container_name: 77ai-frontend
+    restart: unless-stopped
+    working_dir: /app
+    command: >
+      sh -c "
+        npm install &&
+        npm run build &&
+        npx serve -s dist -l 3000
+      "
+    environment:
+      NODE_ENV: production
+      VITE_API_URL: http://localhost:5000
+    volumes:
+      - ./client:/app
+      - /app/node_modules
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - 77ai-network
+
+volumes:
+  mongodb_data:
+    driver: local
+  redis_data:
+    driver: local
+
+networks:
+  77ai-network:
+    driver: bridge
+EOF
+
+    log_success "简化配置创建完成"
+}
+
 # 构建和启动服务
 deploy_services() {
-    log_info "构建Docker镜像（使用多阶段构建）..."
+    log_info "启动服务（使用简化配置）..."
     
-    # 使用生产环境Dockerfile
-    export DOCKER_BUILDKIT=1
-    docker-compose build --no-cache
+    # 创建简化配置
+    create_simple_config
     
-    if [ $? -ne 0 ]; then
-        log_error "Docker构建失败，尝试使用备用方案..."
-        
-        # 备用方案：使用原始Dockerfile
-        log_info "使用备用Dockerfile..."
-        docker-compose -f docker-compose.backup.yml build --no-cache
-    fi
-    
-    log_info "启动服务..."
-    docker-compose up -d
+    # 启动服务
+    docker-compose -f docker-compose.simple.yml up -d
     
     log_success "服务启动完成"
 }
@@ -108,26 +220,28 @@ wait_for_services() {
     
     # 等待MongoDB
     log_info "等待MongoDB启动..."
-    sleep 10
+    sleep 20
     
     # 等待后端服务
     log_info "等待后端服务启动..."
-    for i in {1..30}; do
-        if curl -f http://localhost:5000/api/health &> /dev/null; then
+    for i in {1..60}; do
+        if docker-compose -f docker-compose.simple.yml exec -T backend curl -f http://localhost:5000/api/health &> /dev/null; then
+            log_success "后端服务启动成功"
             break
         fi
         sleep 5
-        echo "等待后端服务启动... ($i/30)"
+        echo "等待后端服务启动... ($i/60)"
     done
     
     # 等待前端服务
     log_info "等待前端服务启动..."
-    for i in {1..30}; do
+    for i in {1..60}; do
         if curl -f http://localhost:3000 &> /dev/null; then
+            log_success "前端服务启动成功"
             break
         fi
         sleep 5
-        echo "等待前端服务启动... ($i/30)"
+        echo "等待前端服务启动... ($i/60)"
     done
     
     log_success "所有服务已就绪"
@@ -143,21 +257,20 @@ show_deployment_info() {
     echo "📱 访问地址："
     echo "  前端应用: http://localhost:3000"
     echo "  后端API:  http://localhost:5000"
-    echo "  Nginx代理: http://localhost"
     echo ""
     echo "🔧 管理命令："
-    echo "  查看日志: docker-compose logs -f"
-    echo "  查看后端日志: docker-compose logs -f backend"
-    echo "  查看前端日志: docker-compose logs -f frontend"
-    echo "  停止服务: docker-compose down"
-    echo "  重启服务: docker-compose restart"
-    echo "  查看状态: docker-compose ps"
+    echo "  查看日志: docker-compose -f docker-compose.simple.yml logs -f"
+    echo "  查看后端日志: docker-compose -f docker-compose.simple.yml logs -f backend"
+    echo "  查看前端日志: docker-compose -f docker-compose.simple.yml logs -f frontend"
+    echo "  停止服务: docker-compose -f docker-compose.simple.yml down"
+    echo "  重启服务: docker-compose -f docker-compose.simple.yml restart"
+    echo "  查看状态: docker-compose -f docker-compose.simple.yml ps"
     echo ""
     echo "🔍 故障排除："
-    echo "  如果构建失败，请检查："
-    echo "  1. 网络连接是否正常"
-    echo "  2. Docker是否有足够空间"
-    echo "  3. 系统资源是否充足"
+    echo "  如果服务无法启动，请检查："
+    echo "  1. 端口是否被占用: netstat -tulpn | grep -E ':(3000|5000|6379|27017)'"
+    echo "  2. Docker日志: docker-compose -f docker-compose.simple.yml logs"
+    echo "  3. 系统资源: free -h, df -h"
     echo ""
     echo "📊 数据库连接："
     echo "  MongoDB: mongodb://admin:password123@localhost:27017"
@@ -167,6 +280,7 @@ show_deployment_info() {
     echo "  1. 请编辑 .env 文件配置您的AI服务API密钥"
     echo "  2. 建议修改默认数据库密码"
     echo "  3. 生产环境请配置HTTPS证书"
+    echo "  4. 当前使用Node.js 20解决兼容性问题"
     echo ""
 }
 
